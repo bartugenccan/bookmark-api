@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 
 // Services
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -11,6 +11,9 @@ import { User } from '@prisma/client';
 
 // Argon
 import * as argon from 'argon2';
+
+// Errors
+import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library';
 
 @Injectable()
 export class AuthService {
@@ -28,28 +31,69 @@ export class AuthService {
 
         const hash: string = await argon.hash(password);
 
-        const newUser = await this.prisma.user.create({
-            data: {
-                email,
-                hash,
-                firstName,
-                lastName,
+        try {
+            const newUser = await this.prisma.user.create({
+                data: {
+                    email,
+                    hash,
+                    firstName,
+                    lastName,
+                },
+                select: {
+                    id: true,
+                    email: true,
+                    createdAt: true,
+                    updatedAt: true,
+                    firstName: true,
+                    lastName: true
+                }
+            });
+            return newUser as User;
+        } catch (error) {
+            if (error instanceof PrismaClientKnownRequestError && error.code === "P2002") {
+                throw new ForbiddenException("Credentials taken.");
+            }
+            throw error;
+        }
+    }
+
+
+    /**
+     * Sign in a user.
+     * 
+     * @param loginDto - The login credentials.
+     * @returns The signed in user.
+     */
+    async signIn(loginDto: LoginDto): Promise<User> {
+        const { email, password } = loginDto;
+
+        const user = await this.prisma.user.findUnique({
+            where: {
+                email
             },
             select: {
                 id: true,
                 email: true,
                 createdAt: true,
+                updatedAt: true,
                 firstName: true,
-                lastName: true
+                lastName: true,
+                hash: true
             }
-        }).catch((error) => {
-            throw new Error(`Failed to sign up user: ${error.message}`);
         });
 
-        return newUser as User;
-    }
+        if (!user) {
+            throw new ForbiddenException("Credentials incorrect.");
+        }
 
+        const { hash, ...userWithoutHash } = user;
 
-    signIn() {
+        const pwMatches: boolean = await argon.verify(hash, password);
+
+        if (!pwMatches) {
+            throw new ForbiddenException("Credentials incorrect.");
+        }
+
+        return userWithoutHash as User;
     }
 }
