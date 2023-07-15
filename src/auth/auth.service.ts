@@ -2,6 +2,8 @@ import { ForbiddenException, Injectable } from '@nestjs/common';
 
 // Services
 import { PrismaService } from 'src/prisma/prisma.service';
+import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 
 // DTOS
 import { LoginDto, RegisterDto } from './dto';
@@ -18,7 +20,7 @@ import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library';
 @Injectable()
 export class AuthService {
 
-    constructor(private prisma: PrismaService) { }
+    constructor(private prisma: PrismaService, private jwtService: JwtService, private configService: ConfigService) { }
 
     /**
      * Sign up a user.
@@ -62,38 +64,41 @@ export class AuthService {
      * Sign in a user.
      * 
      * @param loginDto - The login credentials.
-     * @returns The signed in user.
+     * @returns The signed in user's access token.
      */
-    async signIn(loginDto: LoginDto): Promise<User> {
+    async signIn(loginDto: LoginDto): Promise<{ access_token: string }> {
         const { email, password } = loginDto;
 
+        // Find the user with the given email and select specific fields
         const user = await this.prisma.user.findUnique({
             where: {
                 email
             },
-            select: {
-                id: true,
-                email: true,
-                createdAt: true,
-                updatedAt: true,
-                firstName: true,
-                lastName: true,
-                hash: true
-            }
         });
 
-        if (!user) {
+        // Check if user exists and if the password is correct
+        if (!user || !(await argon.verify(user.hash, password))) {
+            // Throw an exception if credentials are incorrect
             throw new ForbiddenException("Credentials incorrect.");
         }
 
-        const { hash, ...userWithoutHash } = user;
+        // Generate and return the access token for the user
+        return this.signToken(user.id, user.email);
+    }
 
-        const pwMatches: boolean = await argon.verify(hash, password);
+    /**
+     * Signs a token with the given user ID and email.
+     * @param userId The user ID.
+     * @param email The email.
+     * @returns An object containing the access token.
+     */
+    async signToken(userId: string, email: string): Promise<{ access_token: string }> {
+        const payload = { sub: userId, email };
+        const secret = this.configService.get('JWT_SECRET');
+        const expiresIn = '15m';
 
-        if (!pwMatches) {
-            throw new ForbiddenException("Credentials incorrect.");
-        }
+        const access_token = this.jwtService.sign(payload, { secret, expiresIn });
 
-        return userWithoutHash as User;
+        return { access_token };
     }
 }
